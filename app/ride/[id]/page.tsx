@@ -607,17 +607,17 @@ export default function RideNavigationPage() {
                 >
                   <QrCode className="w-12 h-12 text-black" />
                 </div>
-                <div className="flex-1 space-y-2">
+                <div className="flex-1 min-w-0 space-y-2">
                   <p className="text-[10px] text-gray-400 leading-tight">Have your friends scan this QR code or share the link below to sync routes.</p>
                   <div className="flex items-center space-x-2 bg-black border border-white/10 rounded-md p-1.5">
-                    <input type="text" readOnly value={typeof window !== 'undefined' ? window.location.href : ''} className="flex-1 bg-transparent text-gray-400 text-[10px] outline-none px-1" />
+                    <input type="text" readOnly value={typeof window !== 'undefined' ? window.location.href : ''} className="flex-1 min-w-0 bg-transparent text-gray-400 text-[10px] outline-none px-1" />
                     <button 
                       onClick={() => {
                         const url = typeof window !== 'undefined' ? window.location.href : '';
                         const text = `Hey! I'm heading to ${destination}. Join my live ride on RideFlow here: ${url}`;
                         window.open(`whatsapp://send?text=${encodeURIComponent(text)}`);
                       }} 
-                      className="bg-green-500/20 hover:bg-green-500/30 text-green-400 px-3 py-1 rounded text-[10px] font-bold transition-colors flex items-center space-x-1"
+                      className="shrink-0 bg-green-500/20 hover:bg-green-500/30 text-green-400 px-3 py-1 rounded text-[10px] font-bold transition-colors flex items-center space-x-1"
                       title="Share via WhatsApp"
                     >
                       <Share2 className="w-3 h-3" />
@@ -628,7 +628,7 @@ export default function RideNavigationPage() {
                         navigator.clipboard.writeText(typeof window !== 'undefined' ? window.location.href : '');
                         alert("Link Copied!");
                       }} 
-                      className="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 px-2 py-1 rounded text-[10px] font-bold transition-colors"
+                      className="shrink-0 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 px-2 py-1 rounded text-[10px] font-bold transition-colors"
                     >
                       Copy
                     </button>
