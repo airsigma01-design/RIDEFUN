@@ -27,6 +27,7 @@ interface TomTomMapProps {
   isNavigating?: boolean;
   bearing?: number;
   onMapClick?: (lat: number, lng: number) => void;
+  onMapDoubleClick?: (lat: number, lng: number) => void;
 }
 
 export function TomTomMap({ 
@@ -40,7 +41,8 @@ export function TomTomMap({
   recenterToggle,
   isNavigating = false,
   bearing = 0,
-  onMapClick
+  onMapClick,
+  onMapDoubleClick
 }: TomTomMapProps) {
   const mapElement = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<any>(null);
@@ -81,17 +83,30 @@ export function TomTomMap({
     });
   }, []); // Initialize once
 
-  // Handle Map Clicks (for Break Points)
+  // Handle Map Clicks (for Break Points & Waypoints)
   useEffect(() => {
-    if (!map || !onMapClick) return;
+    if (!map) return;
     
     const clickHandler = (e: any) => {
-      onMapClick(e.lngLat.lat, e.lngLat.lng);
+      if (onMapClick) onMapClick(e.lngLat.lat, e.lngLat.lng);
+    };
+    
+    const dblClickHandler = (e: any) => {
+      // Prevent zooming if double click is handled
+      if (onMapDoubleClick) {
+        e.preventDefault();
+        onMapDoubleClick(e.lngLat.lat, e.lngLat.lng);
+      }
     };
     
     map.on('click', clickHandler);
-    return () => map.off('click', clickHandler);
-  }, [map, onMapClick]);
+    map.on('dblclick', dblClickHandler);
+    
+    return () => {
+      map.off('click', clickHandler);
+      map.off('dblclick', dblClickHandler);
+    };
+  }, [map, onMapClick, onMapDoubleClick]);
 
   // Update map camera based on navigation state
   useEffect(() => {

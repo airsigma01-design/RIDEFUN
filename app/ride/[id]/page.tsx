@@ -84,10 +84,15 @@ export default function RideNavigationPage() {
   const [showExpandedQr, setShowExpandedQr] = useState(false);
   const [joinRequest, setJoinRequest] = useState<string | null>(null);
   
-  // Break Point State
+  // Break Point & Waypoint State
   const [globalBreakPoint, setGlobalBreakPoint] = useState<{lat: number, lng: number, createdBy: string, name: string} | null>(null);
   const [isRoutingToBreak, setIsRoutingToBreak] = useState(false);
   const [isSelectingBreakPoint, setIsSelectingBreakPoint] = useState(false);
+  const [customWaypoint, setCustomWaypoint] = useState<{lat: number, lng: number} | null>(null);
+
+  // Dynamic Destination State
+  const [globalDestination, setGlobalDestination] = useState<{lat: number, lng: number, name: string} | null>(null);
+  const [isEditingDestination, setIsEditingDestination] = useState(false);
 
   // Audio Ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -162,6 +167,19 @@ export default function RideNavigationPage() {
         // Break ended globally by the creator
         setGlobalBreakPoint(null);
         setIsRoutingToBreak(false);
+      })
+      .on('broadcast', { event: 'update_destination' }, (payload) => {
+        // Host updated destination
+        setGlobalDestination(payload.payload);
+      })
+      .on('broadcast', { event: 'end_ride_all' }, () => {
+        // Host ended the ride for everyone
+        alert("The host has ended the ride for everyone.");
+        setIsNavigating(false);
+        if (params?.id) {
+          sessionStorage.removeItem(`navigating_${params.id}`);
+        }
+        router.push("/dashboard");
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
@@ -249,10 +267,11 @@ export default function RideNavigationPage() {
   useEffect(() => {
     if (!localLocation || !user) return;
     
-    // Use Break Point as destination if opted in
+    // Use Break Point or Global Destination if they exist
     const isBreakActive = isRoutingToBreak && globalBreakPoint;
-    const destLat = isBreakActive ? globalBreakPoint.lat : (destLatStr ? parseFloat(destLatStr) : 37.8199);
-    const destLng = isBreakActive ? globalBreakPoint.lng : (destLngStr ? parseFloat(destLngStr) : -122.4783);
+    const destLat = isBreakActive ? globalBreakPoint.lat : (globalDestination ? globalDestination.lat : (destLatStr ? parseFloat(destLatStr) : 37.8199));
+    const destLng = isBreakActive ? globalBreakPoint.lng : (globalDestination ? globalDestination.lng : (destLngStr ? parseFloat(destLngStr) : -122.4783));
+    const activeDestinationName = globalDestination ? globalDestination.name : destination;
 
     // --- Smart Meetup Point Calculation ---
     const validOtherRiders = otherRiders.filter(r => r.lat && r.lng);
@@ -341,7 +360,10 @@ export default function RideNavigationPage() {
              if (includeMeetup && meetup) {
                 routeUrl += `:${meetup.lat},${meetup.lng}`;
              }
-             const altParam = includeMeetup ? '' : '&maxAlternatives=2';
+             if (customWaypoint) {
+                routeUrl += `:${customWaypoint.lat},${customWaypoint.lng}`;
+             }
+             const altParam = (includeMeetup || customWaypoint) ? '' : '&maxAlternatives=2';
              routeUrl += `:${destLat},${destLng}/json?key=${apiKey}${altParam}`;
              
              const res = await fetch(routeUrl);
@@ -445,7 +467,7 @@ export default function RideNavigationPage() {
       lastRoutedLocationRef.current = localLocation;
       lastRidersCountRef.current = validOtherRiders.length;
     }
-  }, [localLocation, otherRiders, user, destLatStr, destLngStr]);
+  }, [localLocation, otherRiders, user, destLatStr, destLngStr, globalDestination, customWaypoint, isRoutingToBreak, globalBreakPoint]);
 
   const handleStartNavigation = () => {
     setIsNavigating(true);
@@ -491,10 +513,13 @@ export default function RideNavigationPage() {
     }
   };
 
+  const handleMapDoubleClick = (lat: number, lng: number) => {
+    // Set a custom waypoint for the route
+    setCustomWaypoint({ lat, lng });
+  };
+
   const handleEndBreak = () => {
     setIsRoutingToBreak(false); // Restore personal routing
-    // If I am the creator, maybe optionally clear it for everyone? 
-    // The user requested localized end-break so we just turn it off locally.
     if (globalBreakPoint?.createdBy === user?.name && channelRef.current) {
        channelRef.current.send({
          type: 'broadcast',
@@ -504,14 +529,27 @@ export default function RideNavigationPage() {
     }
   };
 
+  const activeDestinationName = globalDestination ? globalDestination.name : destination;
+
   const handleEndRide = () => {
-    if (confirm("Are you sure you want to end this ride?")) {
-      setIsNavigating(false);
-      if (params?.id) {
-        sessionStorage.removeItem(`navigating_${params.id}`);
+    if (user?.isAdmin) {
+      if (confirm("You are the host. Do you want to end this ride for EVERYONE?")) {
+        if (channelRef.current) {
+          channelRef.current.send({
+            type: 'broadcast',
+            event: 'end_ride_all'
+          });
+        }
       }
-      router.push("/dashboard");
+    } else {
+      if (!confirm("Are you sure you want to end this ride?")) return;
     }
+    
+    setIsNavigating(false);
+    if (params?.id) {
+      sessionStorage.removeItem(`navigating_${params.id}`);
+    }
+    router.push("/dashboard");
   };
 
   if (!user) return null;
@@ -535,7 +573,23 @@ export default function RideNavigationPage() {
           recenterToggle={recenterToggle}
           isNavigating={isNavigating}
           bearing={mapBearing}
-          onMapClick={handleMapClick}
+          onMapClick={(lat, lng) => {
+            if (isEditingDestination) {
+              // Update destination globally
+              if (channelRef.current) {
+                channelRef.current.send({
+                  type: 'broadcast',
+                  event: 'update_destination',
+                  payload: { lat, lng, name: "Custom Destination" }
+                });
+              }
+              setGlobalDestination({ lat, lng, name: "Custom Destination" });
+              setIsEditingDestination(false);
+            } else {
+              handleMapClick(lat, lng);
+            }
+          }}
+          onMapDoubleClick={handleMapDoubleClick}
         />
       </div>
 
@@ -557,6 +611,15 @@ export default function RideNavigationPage() {
           <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
           <p className="font-semibold text-sm">Tap anywhere on the map to set Break Point</p>
           <X className="w-4 h-4 text-gray-400" />
+        </div>
+      )}
+
+      {/* EDITING DESTINATION OVERLAY */}
+      {isEditingDestination && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 bg-blue-900/90 backdrop-blur-md text-white px-6 py-3 rounded-full shadow-2xl border border-blue-400/50 flex items-center space-x-3 pointer-events-auto cursor-pointer" onClick={() => setIsEditingDestination(false)}>
+          <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+          <p className="font-semibold text-sm">Tap anywhere on the map to set a new Destination</p>
+          <X className="w-4 h-4 text-blue-200" />
         </div>
       )}
 
@@ -598,9 +661,16 @@ export default function RideNavigationPage() {
       {/* TOP LEFT: Compact Stats Panel */}
       <FadeContent blur={true} duration={1000} delay={0.2} ease="ease-out" initialOpacity={0} className="absolute top-4 left-4 right-16 md:right-auto z-20 pointer-events-none">
         <div className="pointer-events-auto rounded-xl border border-white/40 bg-white/30 px-3 py-2 shadow-xl backdrop-blur-md flex items-center space-x-3 md:space-x-6 overflow-hidden">
-          <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-0.5">Dest</p>
-            <h2 className="text-sm font-bold text-slate-900 line-clamp-2 whitespace-normal">{destination}</h2>
+          <div className="flex-1 min-w-0 flex items-center justify-between">
+            <div>
+              <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-0.5">Dest</p>
+              <h2 className="text-sm font-bold text-slate-900 line-clamp-2 whitespace-normal">{activeDestinationName}</h2>
+            </div>
+            {user.isAdmin && (
+              <button onClick={() => setIsEditingDestination(true)} className="ml-2 p-1.5 rounded-full hover:bg-black/10 transition-colors text-slate-500 hover:text-slate-900">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+            )}
           </div>
           <div className="h-6 w-px bg-black/20 shrink-0"></div>
           <div className="flex items-center space-x-1.5 shrink-0">
@@ -686,8 +756,8 @@ export default function RideNavigationPage() {
       {/* BOTTOM CENTER: Start Ride Button */}
       {!isNavigating && (
         <div className="absolute bottom-10 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:right-auto md:w-auto z-20 flex justify-center pointer-events-none">
-          <StarBorder color="#10b981" speed="4s" className="p-[1px] pointer-events-auto">
-            <AnimatedButton onClick={handleStartNavigation} className="h-12 px-8 bg-white/40 text-slate-900 backdrop-blur-md border border-white/50 font-black text-base hover:bg-white/50 rounded-full shadow-2xl">
+          <StarBorder color="#10b981" speed="4s" className="p-[1px] pointer-events-auto rounded-full">
+            <AnimatedButton onClick={handleStartNavigation} className="h-12 px-8 bg-black/80 text-white backdrop-blur-md border border-white/20 font-black text-base hover:bg-black/90 rounded-full shadow-2xl">
               Start Navigating
             </AnimatedButton>
           </StarBorder>
