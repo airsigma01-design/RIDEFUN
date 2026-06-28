@@ -62,6 +62,7 @@ export default function RideNavigationPage() {
   const [mapZoom, setMapZoom] = useState(12); // Overview zoom
   const [mapMarkers, setMapMarkers] = useState<any[]>([]);
   const [routes, setRoutes] = useState<any[]>([]);
+  const [routeSummaries, setRouteSummaries] = useState<any[]>([]);
   const [friendRoutes, setFriendRoutes] = useState<any[]>([]);
   const [activeRouteIndex, setActiveRouteIndex] = useState(0);
   const [recenterToggle, setRecenterToggle] = useState(0);
@@ -100,6 +101,15 @@ export default function RideNavigationPage() {
       }
     }
   }, [params?.id]);
+
+  // Update ETA and Distance when active route changes
+  useEffect(() => {
+    if (routeSummaries.length > activeRouteIndex) {
+      const bestRoute = routeSummaries[activeRouteIndex];
+      setEta(Math.round(bestRoute.travelTimeInSeconds / 60) + " mins");
+      setDistance((bestRoute.lengthInMeters / 1000).toFixed(1) + " km");
+    }
+  }, [activeRouteIndex, routeSummaries]);
 
   // Simulate Private Join Request for Admins
   useEffect(() => {
@@ -302,9 +312,10 @@ export default function RideNavigationPage() {
             const data = await res.json();
             if (data.routes && data.routes.length > 0) {
               setRouteError(null);
-              const bestRoute = data.routes[0].summary;
-              setEta(Math.round(bestRoute.travelTimeInSeconds / 60) + " mins");
-              setDistance((bestRoute.lengthInMeters / 1609.34).toFixed(1) + " mi");
+              
+              const summaries = data.routes.map((r: any) => r.summary);
+              setRouteSummaries(summaries);
+              // setActiveRouteIndex(0); // Optional: reset to primary route on new fetch
   
               const routeGeoJsons = data.routes.map((r: any) => {
                 let allPoints: any[] = [];
@@ -597,8 +608,10 @@ export default function RideNavigationPage() {
               {otherRiders.map((rider, idx) => {
                 let distToMe = "--";
                 if (localLocation && rider.lat && rider.lng) {
+                   // Calculate distance in km
                    const miles = calculateDistance(localLocation.lat, localLocation.lng, rider.lat, rider.lng);
-                   distToMe = miles.toFixed(1) + " mi";
+                   const km = miles * 1.60934;
+                   distToMe = km.toFixed(1) + " km";
                 }
                 return (
                   <div key={rider.id || idx} className="p-3 mb-2 rounded-xl bg-purple-500/5 border border-purple-500/20 flex items-center space-x-4 animate-in fade-in duration-300">
