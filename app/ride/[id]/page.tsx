@@ -235,6 +235,24 @@ export default function RideNavigationPage() {
     const destLat = destLatStr ? parseFloat(destLatStr) : 37.8199;
     const destLng = destLngStr ? parseFloat(destLngStr) : -122.4783;
 
+    // --- Smart Meetup Point Calculation ---
+    const validOtherRiders = otherRiders.filter(r => r.lat && r.lng);
+    const allRiderLocs = [localLocation, ...validOtherRiders.map(r => ({ lat: r.lat, lng: r.lng }))];
+    const meetup = validOtherRiders.length > 0 ? calculateMeetupPoint(allRiderLocs) : null;
+    
+    let hasMeetupWaypoint = false;
+    if (meetup) {
+      let maxDist = 0;
+      allRiderLocs.forEach(loc => {
+         const d = calculateDistance(loc.lat, loc.lng, meetup.lat, meetup.lng);
+         if (d > maxDist) maxDist = d;
+      });
+      // Use meetup point if riders are reasonably spread out (> 0.05 miles from center, approx 250ft)
+      if (maxDist > 0.05) {
+         hasMeetupWaypoint = true;
+      }
+    }
+
     // --- Build Markers ---
     const newMarkers: any[] = [
       { 
@@ -253,7 +271,6 @@ export default function RideNavigationPage() {
       { id: 'end', lng: destLng, lat: destLat, color: '#10b981', label: "D" }
     ];
 
-    const validOtherRiders = otherRiders.filter(r => r.lat && r.lng);
     validOtherRiders.forEach(r => {
       newMarkers.push({
         id: r.id,
@@ -269,6 +286,11 @@ export default function RideNavigationPage() {
         }
       });
     });
+
+    if (hasMeetupWaypoint && meetup) {
+      newMarkers.push({ id: 'meetup', lng: meetup.lng, lat: meetup.lat, color: '#f59e0b', label: "M" });
+    }
+
     setMapMarkers(newMarkers);
 
     // --- Routing Logic ---
@@ -283,80 +305,66 @@ export default function RideNavigationPage() {
       const fetchRoutes = async () => {
         try {
           const apiKey = process.env.NEXT_PUBLIC_TOMTOM_API_KEY;
-          let routeUrl = `https://api.tomtom.com/routing/1/calculateRoute/${localLocation.lat},${localLocation.lng}`;
+
+          // Helper to fetch main route with or without meetup point
+          const fetchMainRoute = async (includeMeetup: boolean) => {
+             let routeUrl = `https://api.tomtom.com/routing/1/calculateRoute/${localLocation.lat},${localLocation.lng}`;
+             if (includeMeetup && meetup) {
+                routeUrl += `:${meetup.lat},${meetup.lng}`;
+             }
+             const altParam = includeMeetup ? '' : '&maxAlternatives=2';
+             routeUrl += `:${destLat},${destLng}/json?key=${apiKey}${altParam}`;
+             
+             const res = await fetch(routeUrl);
+             if (res.ok) {
+                const data = await res.json();
+                if (data.routes && data.routes.length > 0) return data;
+             }
+             return null;
+          };
+
+          let data = await fetchMainRoute(hasMeetupWaypoint);
           
-          // Smart Meetup Point Calculation
-          const allRiderLocs = [localLocation, ...validOtherRiders.map(r => ({ lat: r.lat, lng: r.lng }))];
-          const meetup = validOtherRiders.length > 0 ? calculateMeetupPoint(allRiderLocs) : null;
-          
-          let hasMeetupWaypoint = false;
-          if (meetup) {
-            let maxDist = 0;
-            allRiderLocs.forEach(loc => {
-               const d = calculateDistance(loc.lat, loc.lng, meetup.lat, meetup.lng);
-               if (d > maxDist) maxDist = d;
-            });
-            // Only use meetup point if riders are reasonably spread out (> 0.05 miles from center, approx 250ft)
-            if (maxDist > 0.05) {
-               routeUrl += `:${meetup.lat},${meetup.lng}`;
-               hasMeetupWaypoint = true;
-            }
+          // FALLBACK: If routing to meetup point failed (e.g. centroid is in water), fallback to direct route
+          if (!data && hasMeetupWaypoint) {
+             console.warn("Meetup routing failed. Falling back to direct route.");
+             data = await fetchMainRoute(false);
           }
-          
-          // TomTom often errors if you ask for alternatives WITH waypoints, so disable alternatives if meetup exists
-          const altParam = hasMeetupWaypoint ? '' : '&maxAlternatives=2';
-          routeUrl += `:${destLat},${destLng}/json?key=${apiKey}${altParam}`;
-          
-          const res = await fetch(routeUrl);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.routes && data.routes.length > 0) {
-              setRouteError(null);
-              
-              const summaries = data.routes.map((r: any) => r.summary);
-              setRouteSummaries(summaries);
-              // setActiveRouteIndex(0); // Optional: reset to primary route on new fetch
-  
-              const routeGeoJsons = data.routes.map((r: any) => {
-                let allPoints: any[] = [];
-                // Combine points across multiple legs (e.g. if we have a meetup waypoint)
-                r.legs.forEach((leg: any) => {
-                   allPoints = allPoints.concat(leg.points.map((p: any) => [p.longitude, p.latitude]));
-                });
-                return {
-                  type: 'Feature',
-                  properties: {},
-                  geometry: {
-                    type: 'LineString',
-                    coordinates: allPoints
-                  }
-                };
+
+          if (data && data.routes && data.routes.length > 0) {
+            setRouteError(null);
+            
+            const summaries = data.routes.map((r: any) => r.summary);
+            setRouteSummaries(summaries);
+
+            const routeGeoJsons = data.routes.map((r: any) => {
+              let allPoints: any[] = [];
+              r.legs.forEach((leg: any) => {
+                 allPoints = allPoints.concat(leg.points.map((p: any) => [p.longitude, p.latitude]));
               });
-              setRoutes(routeGeoJsons);
-              
-              // Optional: Add a visual marker for the meetup point
-              if (hasMeetupWaypoint && meetup) {
-                setMapMarkers(prev => [
-                  ...prev, 
-                  { id: 'meetup', lng: meetup.lng, lat: meetup.lat, color: '#f59e0b', label: "M" }
-                ]);
-              }
-            } else {
-              setRouteError("No route found. Try a closer destination.");
-            }
+              return {
+                type: 'Feature',
+                properties: {},
+                geometry: {
+                  type: 'LineString',
+                  coordinates: allPoints
+                }
+              };
+            });
+            setRoutes(routeGeoJsons);
           } else {
             setRouteError("Route calculation failed. Destination is likely too far away.");
           }
           
-          // Fetch friend routes
+          // Fetch friend routes with fallback
           if (validOtherRiders.length > 0) {
              const fRoutes: any[] = [];
              await Promise.all(validOtherRiders.map(async (rider) => {
                let fUrl = `https://api.tomtom.com/routing/1/calculateRoute/${rider.lat},${rider.lng}`;
-               if (hasMeetupWaypoint && meetup) {
-                 fUrl += `:${meetup.lat},${meetup.lng}`;
-               }
+               if (hasMeetupWaypoint && meetup) fUrl += `:${meetup.lat},${meetup.lng}`;
                fUrl += `:${destLat},${destLng}/json?key=${apiKey}`;
+               
+               let friendPts = null;
                try {
                  const fRes = await fetch(fUrl);
                  if (fRes.ok) {
@@ -367,16 +375,27 @@ export default function RideNavigationPage() {
                       rLegs.forEach((leg: any) => {
                         allPts = allPts.concat(leg.points.map((p: any) => [p.longitude, p.latitude]));
                       });
-                      fRoutes.push({
-                         type: 'Feature',
-                         properties: {},
-                         geometry: { type: 'LineString', coordinates: allPts }
-                      });
+                      friendPts = allPts;
                    }
                  }
                } catch (e) {
                  console.error("Friend routing error", e);
                }
+
+               // FALLBACK: Draw straight line if TomTom fails to route them (e.g. they are in the water or non-routable area)
+               if (!friendPts) {
+                  friendPts = [
+                     [rider.lng, rider.lat],
+                     (hasMeetupWaypoint && meetup) ? [meetup.lng, meetup.lat] : [destLng, destLat],
+                     [destLng, destLat] // Finish at destination
+                  ];
+               }
+
+               fRoutes.push({
+                  type: 'Feature',
+                  properties: {},
+                  geometry: { type: 'LineString', coordinates: friendPts }
+               });
              }));
              setFriendRoutes(fRoutes);
           } else {
