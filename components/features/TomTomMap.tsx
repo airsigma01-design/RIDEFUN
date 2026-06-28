@@ -249,15 +249,10 @@ export function TomTomMap({
         }
       });
 
-      // Make lines clickable using manual double click to bypass native map zoom conflicts
+      // Make lines clickable
       if (onRouteChange && !isActive) {
         map.on('click', `route-hit-${index}`, (e: any) => {
-          const currentTime = new Date().getTime();
-          const prevTime = lastRouteClickTime[index] || 0;
-          if (currentTime - prevTime < 400) { // Double click detected
-            onRouteChange(index);
-          }
-          lastRouteClickTime[index] = currentTime;
+          onRouteChange(index);
         });
         map.on('mouseenter', `route-hit-${index}`, () => {
           map.getCanvas().style.cursor = 'pointer';
