@@ -237,18 +237,28 @@ export default function RideNavigationPage() {
 
     // --- Smart Meetup Point Calculation ---
     const validOtherRiders = otherRiders.filter(r => r.lat && r.lng);
-    const allRiderLocs = [localLocation, ...validOtherRiders.map(r => ({ lat: r.lat, lng: r.lng }))];
-    const meetup = validOtherRiders.length > 0 ? calculateMeetupPoint(allRiderLocs) : null;
+    
+    // Smart Radius Clustering (15km)
+    const CLUSTER_RADIUS_MILES = 9.32; // ~15 km
+    const AUTO_CLEAR_RADIUS_MILES = 0.186; // ~300 meters
+
+    const clusterFriends = validOtherRiders.filter(r => {
+      const dist = calculateDistance(localLocation.lat, localLocation.lng, r.lat, r.lng);
+      return dist <= CLUSTER_RADIUS_MILES;
+    });
+
+    const allClusterLocs = [localLocation, ...clusterFriends.map(r => ({ lat: r.lat, lng: r.lng }))];
+    const meetup = clusterFriends.length > 0 ? calculateMeetupPoint(allClusterLocs) : null;
     
     let hasMeetupWaypoint = false;
     if (meetup) {
       let maxDist = 0;
-      allRiderLocs.forEach(loc => {
+      allClusterLocs.forEach(loc => {
          const d = calculateDistance(loc.lat, loc.lng, meetup.lat, meetup.lng);
          if (d > maxDist) maxDist = d;
       });
-      // Use meetup point if riders are reasonably spread out (> 0.05 miles from center, approx 250ft)
-      if (maxDist > 0.05) {
+      // Auto-clear meetup if all cluster members are within 300m of the meetup center
+      if (maxDist > AUTO_CLEAR_RADIUS_MILES) {
          hasMeetupWaypoint = true;
       }
     }
@@ -361,7 +371,12 @@ export default function RideNavigationPage() {
              const fRoutes: any[] = [];
              await Promise.all(validOtherRiders.map(async (rider) => {
                let fUrl = `https://api.tomtom.com/routing/1/calculateRoute/${rider.lat},${rider.lng}`;
-               if (hasMeetupWaypoint && meetup) fUrl += `:${meetup.lat},${meetup.lng}`;
+               // Only route this friend to the local meetup point if they are within our 15km cluster
+               // Otherwise, just route them straight to the destination
+               const isRiderInCluster = clusterFriends.some(cf => cf.id === rider.id);
+               const shouldRouteToMeetup = hasMeetupWaypoint && meetup && isRiderInCluster;
+
+               if (shouldRouteToMeetup) fUrl += `:${meetup.lat},${meetup.lng}`;
                fUrl += `:${destLat},${destLng}/json?key=${apiKey}`;
                
                let friendPts = null;
@@ -386,7 +401,7 @@ export default function RideNavigationPage() {
                if (!friendPts) {
                   friendPts = [
                      [rider.lng, rider.lat],
-                     (hasMeetupWaypoint && meetup) ? [meetup.lng, meetup.lat] : [destLng, destLat],
+                     (shouldRouteToMeetup) ? [meetup.lng, meetup.lat] : [destLng, destLat],
                      [destLng, destLat] // Finish at destination
                   ];
                }
