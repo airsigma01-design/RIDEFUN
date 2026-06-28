@@ -28,6 +28,7 @@ export default function RideNavigationPage() {
   const [speed, setSpeed] = useState("0 mph");
   const [destination] = useState(destName);
   const [isNavigating, setIsNavigating] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
 
   const [mapCenter, setMapCenter] = useState<[number, number]>([-122.4783, 37.8199]);
   const [mapZoom, setMapZoom] = useState(12); // Overview zoom
@@ -88,6 +89,7 @@ export default function RideNavigationPage() {
         if (res.ok) {
           const data = await res.json();
           if (data.routes && data.routes.length > 0) {
+            setRouteError(null);
             const bestRoute = data.routes[0].summary;
             setEta(Math.round(bestRoute.travelTimeInSeconds / 60) + " mins");
             setDistance((bestRoute.lengthInMeters / 1609.34).toFixed(1) + " mi");
@@ -103,10 +105,15 @@ export default function RideNavigationPage() {
               };
             });
             setRoutes(routeGeoJsons);
+          } else {
+            setRouteError("No route found. Try a closer destination.");
           }
+        } else {
+          setRouteError("Route calculation failed. The destination is likely too far away (e.g. across an ocean) or inaccessible by road.");
         }
       } catch (err) {
         console.error("Routing error", err);
+        setRouteError("Network error while calculating route.");
       }
     };
 
@@ -285,6 +292,13 @@ export default function RideNavigationPage() {
             </div>
           </div>
         </div>
+        
+        {/* Error Message Display */}
+        {routeError && (
+          <div className="mt-2 pointer-events-auto rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 shadow-2xl backdrop-blur-xl">
+            <p className="text-xs font-semibold text-red-400">{routeError}</p>
+          </div>
+        )}
       </FadeContent>
 
       {/* MOBILE TURN INSTRUCTION CARD (Only when navigating) */}
