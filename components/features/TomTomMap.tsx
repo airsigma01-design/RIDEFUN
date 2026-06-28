@@ -26,6 +26,7 @@ interface TomTomMapProps {
   recenterToggle?: number;
   isNavigating?: boolean;
   bearing?: number;
+  onMapClick?: (lat: number, lng: number) => void;
 }
 
 export function TomTomMap({ 
@@ -38,7 +39,8 @@ export function TomTomMap({
   onRouteChange,
   recenterToggle,
   isNavigating = false,
-  bearing = 0
+  bearing = 0,
+  onMapClick
 }: TomTomMapProps) {
   const mapElement = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<any>(null);
@@ -78,6 +80,18 @@ export function TomTomMap({
       }
     });
   }, []); // Initialize once
+
+  // Handle Map Clicks (for Break Points)
+  useEffect(() => {
+    if (!map || !onMapClick) return;
+    
+    const clickHandler = (e: any) => {
+      onMapClick(e.lngLat.lat, e.lngLat.lng);
+    };
+    
+    map.on('click', clickHandler);
+    return () => map.off('click', clickHandler);
+  }, [map, onMapClick]);
 
   // Update map camera based on navigation state
   useEffect(() => {

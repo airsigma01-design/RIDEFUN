@@ -79,9 +79,15 @@ export default function RideNavigationPage() {
 
   // Modals & Notifications
   const [showSos, setShowSos] = useState(false);
+  const [showSosMenu, setShowSosMenu] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const [showExpandedQr, setShowExpandedQr] = useState(false);
   const [joinRequest, setJoinRequest] = useState<string | null>(null);
+  
+  // Break Point State
+  const [globalBreakPoint, setGlobalBreakPoint] = useState<{lat: number, lng: number, createdBy: string, name: string} | null>(null);
+  const [isRoutingToBreak, setIsRoutingToBreak] = useState(false);
+  const [isSelectingBreakPoint, setIsSelectingBreakPoint] = useState(false);
 
   // Audio Ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -146,9 +152,20 @@ export default function RideNavigationPage() {
         }
         setOtherRiders(riders);
       })
+      .on('broadcast', { event: 'break_point' }, (payload) => {
+        // Someone declared a break point
+        setGlobalBreakPoint(payload.payload);
+        // Play notification sound
+        if (audioRef.current) audioRef.current.play().catch(e => console.log(e));
+      })
+      .on('broadcast', { event: 'end_break_point' }, () => {
+        // Break ended globally by the creator
+        setGlobalBreakPoint(null);
+        setIsRoutingToBreak(false);
+      })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          console.log("Connected to Realtime Presence");
+          console.log("Connected to Realtime Presence & Broadcasts");
         }
       });
 
@@ -232,8 +249,10 @@ export default function RideNavigationPage() {
   useEffect(() => {
     if (!localLocation || !user) return;
     
-    const destLat = destLatStr ? parseFloat(destLatStr) : 37.8199;
-    const destLng = destLngStr ? parseFloat(destLngStr) : -122.4783;
+    // Use Break Point as destination if opted in
+    const isBreakActive = isRoutingToBreak && globalBreakPoint;
+    const destLat = isBreakActive ? globalBreakPoint.lat : (destLatStr ? parseFloat(destLatStr) : 37.8199);
+    const destLng = isBreakActive ? globalBreakPoint.lng : (destLngStr ? parseFloat(destLngStr) : -122.4783);
 
     // --- Smart Meetup Point Calculation ---
     const validOtherRiders = otherRiders.filter(r => r.lat && r.lng);
@@ -251,7 +270,7 @@ export default function RideNavigationPage() {
     const meetup = clusterFriends.length > 0 ? calculateMeetupPoint(allClusterLocs) : null;
     
     let hasMeetupWaypoint = false;
-    if (meetup) {
+    if (meetup && !isBreakActive) {
       let maxDist = 0;
       allClusterLocs.forEach(loc => {
          const d = calculateDistance(loc.lat, loc.lng, meetup.lat, meetup.lng);
@@ -450,6 +469,41 @@ export default function RideNavigationPage() {
     setShowSos(false);
   };
 
+  const handleMapClick = (lat: number, lng: number) => {
+    if (!isSelectingBreakPoint) return;
+    
+    // Broadcast the Break Point
+    if (channelRef.current && user) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'break_point',
+        payload: {
+          lat,
+          lng,
+          createdBy: user.name || "Rider",
+          name: "Custom Break Point"
+        }
+      });
+      // Set locally
+      setGlobalBreakPoint({ lat, lng, createdBy: user.name || "Rider", name: "Custom Break Point" });
+      setIsRoutingToBreak(true); // Automatically opt creator in
+      setIsSelectingBreakPoint(false);
+    }
+  };
+
+  const handleEndBreak = () => {
+    setIsRoutingToBreak(false); // Restore personal routing
+    // If I am the creator, maybe optionally clear it for everyone? 
+    // The user requested localized end-break so we just turn it off locally.
+    if (globalBreakPoint?.createdBy === user?.name && channelRef.current) {
+       channelRef.current.send({
+         type: 'broadcast',
+         event: 'end_break_point'
+       });
+       setGlobalBreakPoint(null);
+    }
+  };
+
   const handleEndRide = () => {
     if (confirm("Are you sure you want to end this ride?")) {
       setIsNavigating(false);
@@ -469,7 +523,11 @@ export default function RideNavigationPage() {
         <TomTomMap 
           center={mapCenter}
           zoom={mapZoom} 
-          markers={mapMarkers}
+          markers={
+            globalBreakPoint 
+            ? [...mapMarkers, { id: 'break', lat: globalBreakPoint.lat, lng: globalBreakPoint.lng, label: "Break", color: "#f43f5e" }] 
+            : mapMarkers
+          }
           routes={routes}
           friendRoutes={friendRoutes}
           activeRouteIndex={activeRouteIndex}
@@ -477,6 +535,7 @@ export default function RideNavigationPage() {
           recenterToggle={recenterToggle}
           isNavigating={isNavigating}
           bearing={mapBearing}
+          onMapClick={handleMapClick}
         />
       </div>
 
@@ -492,26 +551,70 @@ export default function RideNavigationPage() {
         />
       </div>
 
+      {/* SELECTING BREAK POINT OVERLAY */}
+      {isSelectingBreakPoint && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 bg-black/80 backdrop-blur-md text-white px-6 py-3 rounded-full shadow-2xl border border-white/20 flex items-center space-x-3 pointer-events-auto cursor-pointer" onClick={() => setIsSelectingBreakPoint(false)}>
+          <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+          <p className="font-semibold text-sm">Tap anywhere on the map to set Break Point</p>
+          <X className="w-4 h-4 text-gray-400" />
+        </div>
+      )}
+
+      {/* BREAK POINT NOTIFICATION (OPT-IN) */}
+      {globalBreakPoint && !isRoutingToBreak && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 w-full max-w-sm pointer-events-none">
+          <div className="pointer-events-auto rounded-2xl border border-white/40 bg-white/60 backdrop-blur-xl p-4 shadow-2xl flex flex-col items-center text-center animate-in slide-in-from-top-10 duration-500">
+            <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mb-2 shadow-inner">
+              <span className="text-xl">☕</span>
+            </div>
+            <p className="text-slate-900 font-bold mb-1">{globalBreakPoint.createdBy} requested a break!</p>
+            <p className="text-slate-600 text-xs font-medium mb-4">Click below to sync your route to the break point.</p>
+            <div className="flex space-x-3 w-full">
+              <button onClick={() => setIsRoutingToBreak(true)} className="flex-1 bg-red-500 text-white rounded-xl py-2.5 text-sm font-bold hover:bg-red-600 transition-colors shadow-md">Join Break</button>
+              <button onClick={() => setGlobalBreakPoint(null)} className="flex-1 bg-white/50 text-slate-600 border border-black/10 rounded-xl py-2.5 text-sm font-bold hover:bg-white/80 transition-colors shadow-sm">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ACTIVE BREAK MODE BAR */}
+      {globalBreakPoint && isRoutingToBreak && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 w-full max-w-sm pointer-events-none">
+          <div className="pointer-events-auto rounded-2xl border border-red-500/50 bg-red-50/90 backdrop-blur-xl p-3 shadow-2xl flex items-center justify-between animate-in slide-in-from-top-10 duration-500">
+            <div className="flex items-center space-x-3">
+               <span className="text-2xl">☕</span>
+               <div>
+                  <p className="text-red-700 font-black text-sm uppercase tracking-wide">Break Active</p>
+                  <p className="text-red-500/80 text-[10px] font-bold">Routing to {globalBreakPoint.createdBy}'s break</p>
+               </div>
+            </div>
+            <button onClick={handleEndBreak} className="bg-red-500 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-red-600 shadow-md">
+               End Break
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* TOP LEFT: Compact Stats Panel */}
       <FadeContent blur={true} duration={1000} delay={0.2} ease="ease-out" initialOpacity={0} className="absolute top-4 left-4 right-16 md:right-auto z-20 pointer-events-none">
-        <div className="pointer-events-auto rounded-xl border border-white/10 bg-black/80 px-3 py-2 shadow-2xl backdrop-blur-xl flex items-center space-x-3 md:space-x-6 overflow-hidden">
+        <div className="pointer-events-auto rounded-xl border border-white/40 bg-white/30 px-3 py-2 shadow-xl backdrop-blur-md flex items-center space-x-3 md:space-x-6 overflow-hidden">
           <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mb-0.5">Dest</p>
-            <h2 className="text-sm font-bold text-white line-clamp-2 whitespace-normal">{destination}</h2>
+            <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-0.5">Dest</p>
+            <h2 className="text-sm font-bold text-slate-900 line-clamp-2 whitespace-normal">{destination}</h2>
           </div>
-          <div className="h-6 w-px bg-white/10 shrink-0"></div>
+          <div className="h-6 w-px bg-black/20 shrink-0"></div>
           <div className="flex items-center space-x-1.5 shrink-0">
-            <Clock className="w-3.5 h-3.5 text-blue-400 hidden sm:block" />
+            <Clock className="w-3.5 h-3.5 text-blue-600 hidden sm:block" />
             <div>
-              <p className="text-[10px] text-gray-400 leading-none">ETA</p>
-              <p className="text-xs font-semibold text-white leading-tight">{eta}</p>
+              <p className="text-[10px] text-slate-600 leading-none">ETA</p>
+              <p className="text-xs font-semibold text-slate-900 leading-tight">{eta}</p>
             </div>
           </div>
           <div className="flex items-center space-x-1.5 shrink-0">
-            <Navigation className="w-3.5 h-3.5 text-purple-400 hidden sm:block" />
+            <Navigation className="w-3.5 h-3.5 text-purple-600 hidden sm:block" />
             <div>
-              <p className="text-[10px] text-gray-400 leading-none">Dist</p>
-              <p className="text-xs font-semibold text-white leading-tight">{distance}</p>
+              <p className="text-[10px] text-slate-600 leading-none">Dist</p>
+              <p className="text-xs font-semibold text-slate-900 leading-tight">{distance}</p>
             </div>
           </div>
         </div>
@@ -527,13 +630,13 @@ export default function RideNavigationPage() {
       {/* MOBILE TURN INSTRUCTION CARD (Only when navigating) */}
       {isNavigating && (
         <div className="absolute top-4 left-4 right-4 z-30 md:hidden animate-in slide-in-from-top fade-in duration-500">
-          <div className="rounded-2xl border border-white/10 bg-[#0a0a0a]/95 backdrop-blur-xl shadow-2xl p-4 flex items-center space-x-4">
+          <div className="rounded-2xl border border-white/40 bg-white/40 backdrop-blur-md shadow-xl p-4 flex items-center space-x-4">
             <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center shrink-0 border border-blue-500/30">
-              <CornerUpLeft className="w-6 h-6 text-blue-400" strokeWidth={3} />
+              <CornerUpLeft className="w-6 h-6 text-blue-600" strokeWidth={3} />
             </div>
             <div>
-              <p className="text-2xl font-black text-white tracking-tight leading-none mb-1">250 m</p>
-              <p className="text-sm font-medium text-gray-400 leading-tight">Turn left onto <span className="text-gray-200">Sahara Road</span></p>
+              <p className="text-2xl font-black text-slate-900 tracking-tight leading-none mb-1">250 m</p>
+              <p className="text-sm font-medium text-slate-600 leading-tight">Turn left onto <span className="text-slate-800">Sahara Road</span></p>
             </div>
           </div>
         </div>
@@ -541,30 +644,29 @@ export default function RideNavigationPage() {
 
       {/* MIDDLE LEFT: Real-time Speedometer */}
       <div className="absolute left-4 top-1/2 -translate-y-1/2 z-20 pointer-events-none">
-        <div className="pointer-events-auto flex items-center justify-center w-14 h-14 md:w-16 md:h-16 rounded-full bg-black/80 border border-white/10 shadow-[0_0_20px_-5px_rgba(255,255,255,0.2)] backdrop-blur-xl transition-all">
+        <div className="pointer-events-auto flex items-center justify-center w-14 h-14 md:w-16 md:h-16 rounded-full bg-white/30 border border-white/40 shadow-xl backdrop-blur-md transition-all">
           <div className="text-center">
-            <span className="block text-base md:text-lg font-bold text-white leading-none">{speed.split(' ')[0]}</span>
-            <span className="block text-[9px] md:text-[10px] text-gray-400 uppercase">mph</span>
+            <span className="block text-base md:text-lg font-bold text-slate-900 leading-none">{speed.split(' ')[0]}</span>
+            <span className="block text-[9px] md:text-[10px] text-slate-600 uppercase font-semibold">mph</span>
           </div>
         </div>
       </div>
 
-      {/* RIGHT CONTROLS: Members, Add, SOS, Cancel */}
       <FadeContent blur={true} duration={1000} delay={0.4} ease="ease-out" initialOpacity={0} className="absolute right-4 top-1/4 md:top-1/2 md:-translate-y-1/2 z-20 pointer-events-none flex flex-col items-end space-y-3">
         {/* Members Count */}
         <button 
           onClick={() => setShowMembers(true)}
-          className="pointer-events-auto flex items-center justify-center h-10 px-3 rounded-full bg-black/80 border border-white/10 backdrop-blur-xl space-x-1.5 hover:bg-white/10 transition-all mb-4" 
+          className="pointer-events-auto flex items-center justify-center h-10 px-3 rounded-full bg-white/30 border border-white/40 backdrop-blur-md space-x-1.5 hover:bg-white/40 transition-all mb-4 shadow-lg" 
           title={privacy === "private" ? "Private Ride" : "Public Ride"}
         >
-          <Users className="w-3.5 h-3.5 text-blue-400" />
-          <span className="text-xs font-bold text-white">{1 + otherRiders.length}/{memberLimit}</span>
+          <Users className="w-3.5 h-3.5 text-blue-600" />
+          <span className="text-xs font-bold text-slate-900">{1 + otherRiders.length}/{memberLimit}</span>
         </button>
 
         {/* Recenter Button */}
         <button 
           onClick={() => setRecenterToggle(Date.now())}
-          className="pointer-events-auto flex h-10 w-10 md:h-12 md:w-12 items-center justify-center rounded-full bg-black/80 border border-white/10 text-emerald-400 backdrop-blur-xl transition-all hover:bg-white/10"
+          className="pointer-events-auto flex h-10 w-10 md:h-12 md:w-12 items-center justify-center rounded-full bg-white/30 border border-white/40 text-emerald-600 backdrop-blur-md transition-all hover:bg-white/40 shadow-lg"
           title="Recenter Map (2D)"
         >
           <LocateFixed className="w-4 h-4 md:w-5 md:h-5" />
@@ -572,8 +674,8 @@ export default function RideNavigationPage() {
 
         {/* SOS Button */}
         <button 
-          onClick={() => setShowSos(true)}
-          className="pointer-events-auto flex h-12 w-12 md:h-14 md:w-14 items-center justify-center rounded-full bg-red-500/20 border border-red-500/30 text-red-500 backdrop-blur-xl transition-all hover:bg-red-500/30 shadow-[0_0_20px_-5px_rgba(239,68,68,0.5)] mt-4"
+          onClick={() => setShowSosMenu(true)}
+          className="pointer-events-auto flex h-12 w-12 md:h-14 md:w-14 items-center justify-center rounded-full bg-red-100 border border-red-200 text-red-600 backdrop-blur-md transition-all hover:bg-red-200 shadow-xl mt-4"
         >
           <AlertTriangle className="w-5 h-5 md:w-6 md:h-6" />
         </button>
@@ -581,10 +683,11 @@ export default function RideNavigationPage() {
       </FadeContent>
 
       {/* BOTTOM CENTER: Start Ride Button */}
+      {/* BOTTOM CENTER: Start Ride Button */}
       {!isNavigating && (
-        <div className="absolute bottom-10 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:right-auto md:w-auto z-20 flex justify-center">
-          <StarBorder color="#ffffff" speed="4s" className="p-[1px]">
-            <AnimatedButton onClick={handleStartNavigation} className="h-12 px-8 bg-white/10 text-white backdrop-blur-xl border border-white/20 font-semibold text-base hover:bg-white/20 rounded-full shadow-lg">
+        <div className="absolute bottom-10 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:right-auto md:w-auto z-20 flex justify-center pointer-events-none">
+          <StarBorder color="#10b981" speed="4s" className="p-[1px] pointer-events-auto">
+            <AnimatedButton onClick={handleStartNavigation} className="h-12 px-8 bg-white/40 text-slate-900 backdrop-blur-md border border-white/50 font-black text-base hover:bg-white/50 rounded-full shadow-2xl">
               Start Navigating
             </AnimatedButton>
           </StarBorder>
@@ -606,21 +709,21 @@ export default function RideNavigationPage() {
 
       {/* MEMBERS MODAL */}
       {showMembers && (
-        <div className="absolute inset-0 z-50 flex items-start justify-end bg-black/60 backdrop-blur-sm p-4 md:p-6">
-          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-2xl relative flex flex-col max-h-full">
-            <div className="p-5 border-b border-white/5 flex items-center justify-between shrink-0">
-              <h2 className="text-xl font-black text-white tracking-tight uppercase flex items-center">
-                <Users className="w-5 h-5 mr-2 text-blue-400" /> Riders <span className="ml-2 text-emerald-400 font-bold">{1 + otherRiders.length}/{memberLimit}</span>
+        <div className="absolute inset-0 z-50 flex items-start justify-end bg-black/20 backdrop-blur-sm p-4 md:p-6">
+          <div className="w-full max-w-sm rounded-2xl border border-white/40 bg-white/60 backdrop-blur-xl shadow-2xl relative flex flex-col max-h-full">
+            <div className="p-5 border-b border-black/10 flex items-center justify-between shrink-0">
+              <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase flex items-center">
+                <Users className="w-5 h-5 mr-2 text-blue-600" /> Riders <span className="ml-2 text-emerald-600 font-bold">{1 + otherRiders.length}/{memberLimit}</span>
               </h2>
-              <button onClick={() => setShowMembers(false)} className="text-gray-400 hover:text-white">
+              <button onClick={() => setShowMembers(false)} className="text-slate-500 hover:text-slate-900 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
             
             <div className="p-2 overflow-y-auto flex-1">
               {/* Current User */}
-              <div className="p-3 mb-2 rounded-xl bg-white/5 border border-white/5 flex items-center space-x-4">
-                <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold shrink-0 overflow-hidden">
+              <div className="p-3 mb-2 rounded-xl bg-white/40 border border-white/50 flex items-center space-x-4 shadow-sm">
+                <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold shrink-0 overflow-hidden shadow-inner">
                   {user.photoUrl ? (
                     <img src={user.photoUrl} alt="Profile" className="w-full h-full object-cover" />
                   ) : (
@@ -628,13 +731,13 @@ export default function RideNavigationPage() {
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-bold text-white truncate">{user.name} {user.lastName}</p>
-                  <p className="text-[11px] text-gray-400 truncate">🏍 {user.bikeModel || "Unknown Bike"}</p>
-                  {user.isAdmin && <span className="inline-block px-1.5 py-0.5 rounded-sm bg-purple-500/20 text-purple-400 text-[9px] font-bold mt-1 uppercase">Admin</span>}
+                  <p className="text-sm font-bold text-slate-900 truncate">{user.name} {user.lastName}</p>
+                  <p className="text-[11px] text-slate-600 truncate">🏍 {user.bikeModel || "Unknown Bike"}</p>
+                  {user.isAdmin && <span className="inline-block px-1.5 py-0.5 rounded-sm bg-purple-100 text-purple-700 border border-purple-200 text-[9px] font-bold mt-1 uppercase shadow-sm">Admin</span>}
                 </div>
                 <div className="text-right shrink-0">
-                  <p className="text-xs font-bold text-emerald-400">{distance}</p>
-                  <p className="text-[10px] text-gray-500">to Dest</p>
+                  <p className="text-xs font-bold text-emerald-600">{distance}</p>
+                  <p className="text-[10px] text-slate-500 font-medium">to {isRoutingToBreak ? "Break" : "Dest"}</p>
                 </div>
               </div>
 
@@ -648,8 +751,8 @@ export default function RideNavigationPage() {
                    distToMe = km.toFixed(1) + " km";
                 }
                 return (
-                  <div key={rider.id || idx} className="p-3 mb-2 rounded-xl bg-purple-500/5 border border-purple-500/20 flex items-center space-x-4 animate-in fade-in duration-300">
-                    <div className="w-10 h-10 rounded-full bg-purple-500 flex items-center justify-center text-white font-bold shrink-0 overflow-hidden">
+                  <div key={rider.id || idx} className="p-3 mb-2 rounded-xl bg-purple-50 border border-purple-200/50 flex items-center space-x-4 animate-in fade-in duration-300 shadow-sm">
+                    <div className="w-10 h-10 rounded-full bg-purple-500 flex items-center justify-center text-white font-bold shrink-0 overflow-hidden shadow-inner">
                       {rider.photoUrl ? (
                         <img src={rider.photoUrl} alt="Profile" className="w-full h-full object-cover" />
                       ) : (
@@ -657,53 +760,53 @@ export default function RideNavigationPage() {
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold text-white truncate">{rider.name} {rider.lastName}</p>
-                      <p className="text-[11px] text-gray-400 truncate">🏍 {rider.bikeModel || "Unknown Bike"}</p>
-                      <span className="inline-flex items-center space-x-1 mt-1">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                        <span className="text-[9px] text-emerald-500 font-bold uppercase">Live</span>
+                      <p className="text-sm font-bold text-slate-900 truncate">{rider.name} {rider.lastName}</p>
+                      <p className="text-[11px] text-slate-600 truncate">🏍 {rider.bikeModel || "Unknown Bike"}</p>
+                      <span className="inline-flex items-center space-x-1 mt-1 bg-white px-1.5 py-0.5 rounded-full border border-black/5 shadow-sm">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span className="text-[9px] text-slate-700 font-bold uppercase">Live</span>
                       </span>
                     </div>
                     <div className="text-right shrink-0">
-                      <p className="text-xs font-bold text-purple-400">{distToMe}</p>
-                      <p className="text-[10px] text-gray-500">from you</p>
+                      <p className="text-xs font-bold text-purple-600">{distToMe}</p>
+                      <p className="text-[10px] text-slate-500 font-medium">from you</p>
                     </div>
                   </div>
                 );
               })}
 
               {otherRiders.length === 0 && (
-                <div className="p-3 rounded-xl border border-dashed border-white/10 flex items-center space-x-4 opacity-50">
-                  <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center shrink-0"></div>
+                <div className="p-3 rounded-xl border border-dashed border-black/20 bg-white/30 flex items-center space-x-4 opacity-70">
+                  <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center shrink-0 border border-black/5"></div>
                   <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-400">Waiting for riders...</p>
+                    <p className="text-sm font-bold text-slate-600">Waiting for riders...</p>
                   </div>
                 </div>
               )}
             </div>
 
             {/* Share / Invite Section embedded at the bottom */}
-            <div className="p-4 border-t border-white/5 bg-white/5 rounded-b-2xl shrink-0">
-              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Invite Riders</h3>
+            <div className="p-4 border-t border-black/10 bg-white/20 rounded-b-2xl shrink-0">
+              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">Invite Riders</h3>
               <div className="flex items-center space-x-4">
                 <div 
                   onClick={() => setShowExpandedQr(true)}
-                  className="w-16 h-16 bg-white rounded-md flex items-center justify-center shrink-0 cursor-pointer hover:bg-gray-200 transition-colors border border-gray-300"
+                  className="w-16 h-16 bg-white rounded-md flex items-center justify-center shrink-0 cursor-pointer hover:bg-gray-50 transition-colors border border-black/10 shadow-sm"
                   title="Click to expand QR code"
                 >
                   <QrCode className="w-12 h-12 text-black" />
                 </div>
                 <div className="flex-1 min-w-0 space-y-2">
-                  <p className="text-[10px] text-gray-400 leading-tight">Have your friends scan this QR code or share the link below to sync routes.</p>
-                  <div className="flex items-center space-x-2 bg-black border border-white/10 rounded-md p-1.5">
-                    <input type="text" readOnly value={typeof window !== 'undefined' ? window.location.href : ''} className="flex-1 min-w-0 bg-transparent text-gray-400 text-[10px] outline-none px-1" />
+                  <p className="text-[10px] text-slate-600 leading-tight">Have your friends scan this QR code or share the link below to sync routes.</p>
+                  <div className="flex items-center space-x-2 bg-white/50 border border-black/10 rounded-md p-1.5 shadow-inner">
+                    <input type="text" readOnly value={typeof window !== 'undefined' ? window.location.href : ''} className="flex-1 min-w-0 bg-transparent text-slate-700 font-medium text-[10px] outline-none px-1" />
                     <button 
                       onClick={() => {
                         const url = typeof window !== 'undefined' ? window.location.href : '';
                         const text = `Hey! I'm heading to ${destination}. Join my live ride on RideFlow here: ${url}`;
                         window.open(`whatsapp://send?text=${encodeURIComponent(text)}`);
                       }} 
-                      className="shrink-0 bg-green-500/20 hover:bg-green-500/30 text-green-400 px-3 py-1 rounded text-[10px] font-bold transition-colors flex items-center space-x-1"
+                      className="shrink-0 bg-green-100 hover:bg-green-200 text-green-700 px-3 py-1 rounded text-[10px] font-bold transition-colors flex items-center space-x-1 border border-green-200 shadow-sm"
                       title="Share via WhatsApp"
                     >
                       <Share2 className="w-3 h-3" />
@@ -714,7 +817,7 @@ export default function RideNavigationPage() {
                         navigator.clipboard.writeText(typeof window !== 'undefined' ? window.location.href : '');
                         alert("Link Copied!");
                       }} 
-                      className="shrink-0 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 px-2 py-1 rounded text-[10px] font-bold transition-colors"
+                      className="shrink-0 bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1 rounded text-[10px] font-bold transition-colors border border-slate-300 shadow-sm"
                     >
                       Copy
                     </button>
@@ -725,10 +828,10 @@ export default function RideNavigationPage() {
 
             {/* End Ride Button */}
             {isNavigating && (
-              <div className="p-4 border-t border-white/5 bg-black/50 rounded-b-2xl shrink-0 flex justify-center">
+              <div className="p-4 border-t border-black/10 bg-white/40 rounded-b-2xl shrink-0 flex justify-center">
                 <button 
                   onClick={handleEndRide}
-                  className="w-full flex items-center justify-center space-x-2 bg-red-500/20 hover:bg-red-500/30 text-red-500 border border-red-500/30 rounded-xl py-3 text-sm font-bold transition-all"
+                  className="w-full flex items-center justify-center space-x-2 bg-red-100 hover:bg-red-200 text-red-600 border border-red-200 rounded-xl py-3 text-sm font-bold transition-all shadow-sm"
                 >
                   <PhoneOff className="w-4 h-4" />
                   <span>End Ride</span>
@@ -762,6 +865,56 @@ export default function RideNavigationPage() {
                <QrCode className="w-full h-full text-white" />
             </div>
             <p className="mt-8 text-xs font-bold text-gray-400 uppercase tracking-widest">RideFlow Secure Share</p>
+          </div>
+        </div>
+      )}
+
+      {/* SOS / BREAK MENU */}
+      {showSosMenu && (
+        <div 
+          className="absolute inset-0 z-[100] flex items-center justify-center bg-black/20 backdrop-blur-sm px-4"
+          onClick={() => setShowSosMenu(false)}
+        >
+          <div 
+            className="w-full max-w-sm rounded-3xl bg-white/70 backdrop-blur-xl border border-white/50 p-6 shadow-2xl relative flex flex-col animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => setShowSosMenu(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-800 transition-colors">
+              <X className="w-6 h-6" />
+            </button>
+            <h2 className="text-xl font-black text-slate-900 mb-6 tracking-tight flex items-center">
+              <AlertTriangle className="w-6 h-6 text-red-500 mr-2" /> Actions
+            </h2>
+            
+            <div className="space-y-3">
+              <button 
+                onClick={() => {
+                  setShowSosMenu(false);
+                  setIsSelectingBreakPoint(true);
+                }}
+                className="w-full flex items-center p-4 bg-orange-100 hover:bg-orange-200 rounded-2xl transition-colors border border-orange-200 shadow-sm"
+              >
+                <div className="w-12 h-12 rounded-xl bg-orange-500 flex items-center justify-center text-2xl shrink-0 mr-4 shadow-inner">☕</div>
+                <div className="text-left">
+                  <p className="font-bold text-orange-900">Take a Break</p>
+                  <p className="text-xs text-orange-700 font-medium">Select a hotel or cafe on the map</p>
+                </div>
+              </button>
+
+              <button 
+                onClick={() => {
+                  setShowSosMenu(false);
+                  setShowSos(true); // Open actual emergency SOS
+                }}
+                className="w-full flex items-center p-4 bg-red-100 hover:bg-red-200 rounded-2xl transition-colors border border-red-200 shadow-sm"
+              >
+                <div className="w-12 h-12 rounded-xl bg-red-500 flex items-center justify-center text-2xl shrink-0 mr-4 shadow-inner">🚨</div>
+                <div className="text-left">
+                  <p className="font-bold text-red-900">Emergency SOS</p>
+                  <p className="text-xs text-red-700 font-medium">Alert group immediately</p>
+                </div>
+              </button>
+            </div>
           </div>
         </div>
       )}
