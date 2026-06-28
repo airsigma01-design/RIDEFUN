@@ -62,6 +62,7 @@ export default function RideNavigationPage() {
   const [mapZoom, setMapZoom] = useState(12); // Overview zoom
   const [mapMarkers, setMapMarkers] = useState<any[]>([]);
   const [routes, setRoutes] = useState<any[]>([]);
+  const [friendRoutes, setFriendRoutes] = useState<any[]>([]);
   const [activeRouteIndex, setActiveRouteIndex] = useState(0);
   const [recenterToggle, setRecenterToggle] = useState(0);
   const [mapBearing, setMapBearing] = useState<number>(0);
@@ -285,14 +286,16 @@ export default function RideNavigationPage() {
                const d = calculateDistance(loc.lat, loc.lng, meetup.lat, meetup.lng);
                if (d > maxDist) maxDist = d;
             });
-            // Only use meetup point if riders are reasonably spread out (> 0.5 miles from center)
-            if (maxDist > 0.5) {
+            // Only use meetup point if riders are reasonably spread out (> 0.05 miles from center, approx 250ft)
+            if (maxDist > 0.05) {
                routeUrl += `:${meetup.lat},${meetup.lng}`;
                hasMeetupWaypoint = true;
             }
           }
           
-          routeUrl += `:${destLat},${destLng}/json?key=${apiKey}&maxAlternatives=2`;
+          // TomTom often errors if you ask for alternatives WITH waypoints, so disable alternatives if meetup exists
+          const altParam = hasMeetupWaypoint ? '' : '&maxAlternatives=2';
+          routeUrl += `:${destLat},${destLng}/json?key=${apiKey}${altParam}`;
           
           const res = await fetch(routeUrl);
           if (res.ok) {
@@ -332,6 +335,41 @@ export default function RideNavigationPage() {
             }
           } else {
             setRouteError("Route calculation failed. Destination is likely too far away.");
+          }
+          
+          // Fetch friend routes
+          if (validOtherRiders.length > 0) {
+             const fRoutes: any[] = [];
+             await Promise.all(validOtherRiders.map(async (rider) => {
+               let fUrl = `https://api.tomtom.com/routing/1/calculateRoute/${rider.lat},${rider.lng}`;
+               if (hasMeetupWaypoint && meetup) {
+                 fUrl += `:${meetup.lat},${meetup.lng}`;
+               }
+               fUrl += `:${destLat},${destLng}/json?key=${apiKey}`;
+               try {
+                 const fRes = await fetch(fUrl);
+                 if (fRes.ok) {
+                   const fData = await fRes.json();
+                   if (fData.routes && fData.routes.length > 0) {
+                      const rLegs = fData.routes[0].legs;
+                      let allPts: any[] = [];
+                      rLegs.forEach((leg: any) => {
+                        allPts = allPts.concat(leg.points.map((p: any) => [p.longitude, p.latitude]));
+                      });
+                      fRoutes.push({
+                         type: 'Feature',
+                         properties: {},
+                         geometry: { type: 'LineString', coordinates: allPts }
+                      });
+                   }
+                 }
+               } catch (e) {
+                 console.error("Friend routing error", e);
+               }
+             }));
+             setFriendRoutes(fRoutes);
+          } else {
+             setFriendRoutes([]);
           }
         } catch (err) {
           console.error("Routing error", err);
@@ -388,6 +426,7 @@ export default function RideNavigationPage() {
           zoom={mapZoom} 
           markers={mapMarkers}
           routes={routes}
+          friendRoutes={friendRoutes}
           activeRouteIndex={activeRouteIndex}
           onRouteChange={(idx) => setActiveRouteIndex(idx)}
           recenterToggle={recenterToggle}

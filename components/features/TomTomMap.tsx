@@ -20,6 +20,7 @@ interface TomTomMapProps {
     };
   }>;
   routes?: any[]; // GeoJSON FeatureCollection array
+  friendRoutes?: any[]; // GeoJSON FeatureCollection array for friends (purple)
   activeRouteIndex?: number;
   onRouteChange?: (index: number) => void;
   recenterToggle?: number;
@@ -32,6 +33,7 @@ export function TomTomMap({
   zoom = 13,
   markers = [],
   routes = [],
+  friendRoutes = [],
   activeRouteIndex = 0,
   onRouteChange,
   recenterToggle,
@@ -192,6 +194,45 @@ export function TomTomMap({
 
     // Custom double click state
     let lastRouteClickTime: Record<number, number> = {};
+
+    // Remove existing friend routes
+    for (let i = 0; i < 10; i++) {
+      if (map.getLayer(`friend-casing-${i}`)) map.removeLayer(`friend-casing-${i}`);
+      if (map.getLayer(`friend-layer-${i}`)) map.removeLayer(`friend-layer-${i}`);
+      if (map.getSource(`friend-source-${i}`)) map.removeSource(`friend-source-${i}`);
+    }
+
+    // Add friend routes (light purple, lower opacity so map doesn't get cluttered)
+    friendRoutes.forEach((routeGeoJson, index) => {
+      map.addSource(`friend-source-${index}`, {
+        type: 'geojson',
+        data: routeGeoJson
+      });
+
+      map.addLayer({
+        id: `friend-casing-${index}`,
+        type: 'line',
+        source: `friend-source-${index}`,
+        paint: {
+          'line-color': '#d8b4fe', // Light purple for casing
+          'line-width': 6,
+          'line-opacity': 0.2
+        },
+        layout: { 'line-cap': 'round', 'line-join': 'round' }
+      });
+
+      map.addLayer({
+        id: `friend-layer-${index}`,
+        type: 'line',
+        source: `friend-source-${index}`,
+        paint: {
+          'line-color': '#c084fc', // Bright but light purple
+          'line-width': 4,
+          'line-opacity': 0.4 // High transparency
+        },
+        layout: { 'line-cap': 'round', 'line-join': 'round' }
+      });
+    });
 
     // Add new routes
     // Render inactive routes first so the active route is on top
