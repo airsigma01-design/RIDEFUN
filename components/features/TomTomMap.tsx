@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from 'react';
-import '@tomtom-org/maps-sdk/dist/maps.css';
+import '@tomtom-international/web-sdk-maps/dist/maps.css';
 
 interface TomTomMapProps {
   center?: [number, number]; // [longitude, latitude]
@@ -45,7 +45,7 @@ export function TomTomMap({
 
   useEffect(() => {
     // Dynamic import to prevent SSR issues with TomTom SDK
-    import('@tomtom-org/maps-sdk').then((ttMaps) => {
+    import('@tomtom-international/web-sdk-maps').then((ttMaps) => {
       setTt(ttMaps);
       
       if (mapElement.current && !map) {
